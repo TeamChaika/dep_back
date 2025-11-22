@@ -14,7 +14,7 @@ class Settings(BaseModel):
 
 @lru_cache
 def get_settings() -> Settings:
-    env_supabase_url = os.getenv("SUPABASE_URL", "http://172.16.100.65:8000")
+    env_supabase_url = os.getenv("SUPABASE_URL", "https://s4.chaika.team")
     env_supabase_key = os.getenv(
         "SUPABASE_ANON_KEY",
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzYzMTU0MDAwLCJleHAiOjE5MjA5MjA0MDB9.N9oeCHtulTdg9KT2PiV5oVjj2GQEVwf0XZF4Pd6urRI",
