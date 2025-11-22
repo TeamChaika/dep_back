@@ -1,0 +1,7 @@
+fastapi
+supabase
+uvicorn
+email-validator
+requests
+PyJWT
+python-multipart
