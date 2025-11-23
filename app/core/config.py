@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     
     # Supabase settings - required from environment
+    # Делаем их опциональными для локальной разработки или предоставляем дефолтные значения
+    # Но лучше требовать их наличия
     supabase_url: str
     supabase_anon_key: str
 

@@ -4,9 +4,9 @@ import logging
 import uuid
 from datetime import datetime
 from fastapi import HTTPException, status
-from fastapi.concurrency import run_in_threadpool
 from supabase import Client
 
+from app.core.database import db_execute
 from app.schemas.deposit import (
     DepositCreate,
     DepositUpdate,
@@ -26,49 +26,42 @@ async def create_deposit(
     client: Client, payload: DepositCreate, user_id: str
 ) -> DepositResponse:
     """Создать новый депозит"""
-    def _check_establishment():
+    try:
         # Проверяем, что заведение принадлежит пользователю и не удалено
-        response = (
+        establishment_response = await db_execute(
             client.table("establishments")
             .select("id")
             .eq("id", payload.establishment_id)
             .eq("owner_id", user_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
-        if not response.data:
+        if not establishment_response.data:
             raise ValueError("Establishment not found or access denied")
         
-        return True
-
-    def _check_event():
         # Если указано событие, проверяем что оно существует и принадлежит заведению
         if payload.event_id:
-            response = (
+            event_response = await db_execute(
                 client.table("events")
                 .select("id, establishment_id")
                 .eq("id", payload.event_id)
                 .eq("establishment_id", payload.establishment_id)
                 .eq("is_deleted", False)
-                .execute()
             )
             
-            if not response.data:
+            if not event_response.data:
                 raise ValueError("Event not found or does not belong to this establishment")
         
-        return True
-
-    def _create():
         payment_link = generate_payment_link()
         
         # Проверяем уникальность ссылки (маловероятно, но на всякий случай)
+        # В асинхронном коде лучше сделать 1-2 попытки без while True, чтобы не заблокировать
+        # Но пока оставим простую логику
         while True:
-            check_response = (
+            check_response = await db_execute(
                 client.table("deposits")
                 .select("id")
                 .eq("payment_link", payment_link)
-                .execute()
             )
             if not check_response.data:
                 break
@@ -89,18 +82,13 @@ async def create_deposit(
             "is_deleted": False,
         }
         
-        response = client.table("deposits").insert(data).execute()
+        response = await db_execute(client.table("deposits").insert(data))
         
         if not response.data:
             raise ValueError("Failed to create deposit")
         
-        return response.data[0]
+        return DepositResponse(**response.data[0])
 
-    try:
-        await run_in_threadpool(_check_establishment)
-        await run_in_threadpool(_check_event)
-        result = await run_in_threadpool(_create)
-        return DepositResponse(**result)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -118,36 +106,38 @@ async def get_deposit(
     client: Client, deposit_id: str, user_id: str
 ) -> DepositResponse:
     """Получить депозит по ID (только если пользователь является владельцем заведения)"""
-    def _get():
-        response = (
+    try:
+        response = await db_execute(
             client.table("deposits")
             .select("*, establishments!inner(owner_id)")
             .eq("id", deposit_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Deposit not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Deposit not found",
+            )
+        
+        deposit_data = response.data[0]
         
         # Проверяем, что заведение принадлежит пользователю
-        establishment = response.data[0].get("establishments")
+        establishment = deposit_data.get("establishments")
         if not establishment or establishment.get("owner_id") != user_id:
-            raise ValueError("Deposit not found or access denied")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Deposit not found or access denied",
+            )
         
-        return response.data[0]
-
-    try:
-        result = await run_in_threadpool(_get)
         # Удаляем вложенный объект establishments из результата
-        if "establishments" in result:
-            del result["establishments"]
-        return DepositResponse(**result)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+        if "establishments" in deposit_data:
+            del deposit_data["establishments"]
+            
+        return DepositResponse(**deposit_data)
+
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to get deposit: {exc}")
         raise HTTPException(
@@ -160,28 +150,24 @@ async def get_deposit_by_link(
     client: Client, payment_link: str
 ) -> DepositByLinkResponse:
     """Получить депозит по ссылке оплаты (публичный доступ)"""
-    def _get():
-        response = (
+    try:
+        response = await db_execute(
             client.table("deposits")
             .select("*")
             .eq("payment_link", payment_link)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Deposit not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Deposit not found",
+            )
         
-        return response.data[0]
+        return DepositByLinkResponse(**response.data[0])
 
-    try:
-        result = await run_in_threadpool(_get)
-        return DepositByLinkResponse(**result)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to get deposit by link: {exc}")
         raise HTTPException(
@@ -194,7 +180,7 @@ async def list_deposits(
     client: Client, establishment_id: str | None, event_id: str | None, user_id: str, skip: int = 0, limit: int = 100
 ) -> list[DepositResponse]:
     """Получить список депозитов (только для заведений пользователя)"""
-    def _list():
+    try:
         query = (
             client.table("deposits")
             .select("*, establishments!inner(owner_id)")
@@ -209,7 +195,7 @@ async def list_deposits(
         if event_id:
             query = query.eq("event_id", event_id)
         
-        response = query.range(skip, skip + limit - 1).execute()
+        response = await db_execute(query.range(skip, skip + limit - 1))
         
         results = response.data or []
         # Удаляем вложенные объекты establishments из результатов
@@ -217,11 +203,8 @@ async def list_deposits(
             if "establishments" in item:
                 del item["establishments"]
         
-        return results
-
-    try:
-        results = await run_in_threadpool(_list)
         return [DepositResponse(**item) for item in results]
+
     except Exception as exc:
         logger.error(f"Failed to list deposits: {exc}")
         raise HTTPException(
@@ -234,26 +217,28 @@ async def update_deposit(
     client: Client, deposit_id: str, payload: DepositUpdate, user_id: str
 ) -> DepositResponse:
     """Обновить депозит"""
-    def _check_access():
+    try:
         # Проверяем доступ к депозиту
-        response = (
+        response = await db_execute(
             client.table("deposits")
             .select("*, establishments!inner(owner_id)")
             .eq("id", deposit_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Deposit not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Deposit not found",
+            )
         
         establishment = response.data[0].get("establishments")
         if not establishment or establishment.get("owner_id") != user_id:
-            raise ValueError("Deposit not found or access denied")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Deposit not found or access denied",
+            )
         
-        return True
-
-    def _update():
         # Собираем только переданные поля
         data = {}
         
@@ -280,63 +265,59 @@ async def update_deposit(
         if not data:
             raise ValueError("No fields to update")
         
-        response = (
+        update_response = await db_execute(
             client.table("deposits")
             .update(data)
             .eq("id", deposit_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
-        if not response.data:
-            raise ValueError("Deposit not found, access denied, deleted, or update failed")
+        if not update_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Deposit not found, access denied, deleted, or update failed",
+            )
         
-        return response.data[0]
+        return DepositResponse(**update_response.data[0])
 
-    try:
-        await run_in_threadpool(_check_access)
-        result = await run_in_threadpool(_update)
-        return DepositResponse(**result)
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to update deposit: {exc}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update deposit: {exc}",
         ) from exc
 
 
 async def delete_deposit(client: Client, deposit_id: str) -> dict[str, str]:
-    """Удалить депозит (только для администраторов)"""
-    def _delete():
+    """Удалить депозит (только для администраторов - soft delete)"""
+    try:
         # Помечаем депозит как удаленный вместо физического удаления
-        response = (
+        response = await db_execute(
             client.table("deposits")
             .update({"is_deleted": True})
             .eq("id", deposit_id)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Deposit not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Deposit not found",
+            )
         
         return {"message": "Deposit marked as deleted successfully"}
 
-    try:
-        return await run_in_threadpool(_delete)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to delete deposit: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete deposit: {exc}",
         ) from exc
-
