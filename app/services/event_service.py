@@ -3,14 +3,13 @@ from __future__ import annotations
 import logging
 from datetime import date, time, datetime
 from fastapi import HTTPException, status
-from fastapi.concurrency import run_in_threadpool
 from supabase import Client
 
+from app.core.database import db_execute
 from app.schemas.event import (
     EventCreate,
     EventUpdate,
     EventResponse,
-    TicketType,
 )
 
 logger = logging.getLogger(__name__)
@@ -20,23 +19,19 @@ async def create_event(
     client: Client, payload: EventCreate, user_id: str
 ) -> EventResponse:
     """Создать новое событие"""
-    def _check_establishment():
+    try:
         # Проверяем, что заведение принадлежит пользователю и не удалено
-        response = (
+        establishment_response = await db_execute(
             client.table("establishments")
             .select("id")
             .eq("id", payload.establishment_id)
             .eq("owner_id", user_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
-        if not response.data:
+        if not establishment_response.data:
             raise ValueError("Establishment not found or access denied")
         
-        return True
-
-    def _create():
         # Преобразуем ticket_types в JSON
         ticket_types_json = [ticket.model_dump() for ticket in payload.ticket_types]
         
@@ -56,19 +51,13 @@ async def create_event(
             "is_deleted": False,
         }
         
-        response = client.table("events").insert(data).execute()
+        response = await db_execute(client.table("events").insert(data))
         
         if not response.data:
             raise ValueError("Failed to create event")
         
-        return response.data[0]
+        return EventResponse(**response.data[0])
 
-    try:
-        # Проверяем доступ к заведению
-        await run_in_threadpool(_check_establishment)
-        # Создаем событие
-        result = await run_in_threadpool(_create)
-        return EventResponse(**result)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -86,36 +75,38 @@ async def get_event(
     client: Client, event_id: str, user_id: str
 ) -> EventResponse:
     """Получить событие по ID (только если пользователь является владельцем заведения)"""
-    def _get():
-        response = (
+    try:
+        response = await db_execute(
             client.table("events")
             .select("*, establishments!inner(owner_id)")
             .eq("id", event_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Event not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event not found",
+            )
+        
+        event_data = response.data[0]
         
         # Проверяем, что заведение принадлежит пользователю
-        establishment = response.data[0].get("establishments")
+        establishment = event_data.get("establishments")
         if not establishment or establishment.get("owner_id") != user_id:
-            raise ValueError("Event not found or access denied")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event not found or access denied",
+            )
         
-        return response.data[0]
-
-    try:
-        result = await run_in_threadpool(_get)
         # Удаляем вложенный объект establishments из результата
-        if "establishments" in result:
-            del result["establishments"]
-        return EventResponse(**result)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+        if "establishments" in event_data:
+            del event_data["establishments"]
+            
+        return EventResponse(**event_data)
+
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to get event: {exc}")
         raise HTTPException(
@@ -128,45 +119,40 @@ async def get_event_public(
     client: Client, event_id: str
 ) -> EventResponse:
     """Получить событие по ID (публичный доступ)"""
-    def _get():
+    try:
         # Получаем событие
-        event_response = (
+        event_response = await db_execute(
             client.table("events")
             .select("*")
             .eq("id", event_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not event_response.data:
-            raise ValueError("Event not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event not found",
+            )
         
         event = event_response.data[0]
         establishment_id = event.get("establishment_id")
         
         # Получаем информацию о заведении
         if establishment_id:
-            establishment_response = (
+            establishment_response = await db_execute(
                 client.table("establishments")
                 .select("id, name, address, phone")
                 .eq("id", establishment_id)
                 .eq("is_deleted", False)
-                .execute()
             )
             
             if establishment_response.data:
                 event["establishments"] = establishment_response.data[0]
         
-        return event
+        return EventResponse(**event)
 
-    try:
-        result = await run_in_threadpool(_get)
-        return EventResponse(**result)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to get event: {exc}")
         raise HTTPException(
@@ -179,7 +165,7 @@ async def list_events(
     client: Client, establishment_id: str | None, user_id: str, skip: int = 0, limit: int = 100
 ) -> list[EventResponse]:
     """Получить список событий (только для заведений пользователя)"""
-    def _list():
+    try:
         query = (
             client.table("events")
             .select("*, establishments!inner(owner_id)")
@@ -192,7 +178,7 @@ async def list_events(
         if establishment_id:
             query = query.eq("establishment_id", establishment_id)
         
-        response = query.range(skip, skip + limit - 1).execute()
+        response = await db_execute(query.range(skip, skip + limit - 1))
         
         results = response.data or []
         # Удаляем вложенные объекты establishments из результатов
@@ -200,11 +186,8 @@ async def list_events(
             if "establishments" in item:
                 del item["establishments"]
         
-        return results
-
-    try:
-        results = await run_in_threadpool(_list)
         return [EventResponse(**item) for item in results]
+
     except Exception as exc:
         logger.error(f"Failed to list events: {exc}")
         raise HTTPException(
@@ -217,26 +200,28 @@ async def update_event(
     client: Client, event_id: str, payload: EventUpdate, user_id: str
 ) -> EventResponse:
     """Обновить событие"""
-    def _check_access():
+    try:
         # Проверяем доступ к событию
-        response = (
+        response = await db_execute(
             client.table("events")
             .select("*, establishments!inner(owner_id)")
             .eq("id", event_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Event not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event not found",
+            )
         
         establishment = response.data[0].get("establishments")
         if not establishment or establishment.get("owner_id") != user_id:
-            raise ValueError("Event not found or access denied")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event not found or access denied",
+            )
         
-        return True
-
-    def _update():
         # Собираем только переданные поля
         data = {}
         
@@ -260,70 +245,64 @@ async def update_event(
         # Если обновляется event_date или event_time, и end_sale_date не указан,
         # нужно пересчитать end_sale_date
         if (payload.event_date is not None or payload.event_time is not None) and payload.end_sale_date is None:
-            # Получаем текущие данные события
-            current_response = (
-                client.table("events")
-                .select("event_date, event_time")
-                .eq("id", event_id)
-                .execute()
-            )
-            if current_response.data:
-                current = current_response.data[0]
-                event_date = payload.event_date or date.fromisoformat(current["event_date"])
-                event_time = payload.event_time or time.fromisoformat(current["event_time"])
-                data["end_sale_date"] = datetime.combine(event_date, event_time).isoformat()
+            current = response.data[0]
+            event_date = payload.event_date or date.fromisoformat(current["event_date"])
+            event_time = payload.event_time or time.fromisoformat(current["event_time"])
+            data["end_sale_date"] = datetime.combine(event_date, event_time).isoformat()
         
         if not data:
             raise ValueError("No fields to update")
         
-        response = (
+        update_response = await db_execute(
             client.table("events")
             .update(data)
             .eq("id", event_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
-        if not response.data:
-            raise ValueError("Event not found, access denied, deleted, or update failed")
+        if not update_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event not found, access denied, deleted, or update failed",
+            )
         
-        return response.data[0]
+        return EventResponse(**update_response.data[0])
 
-    try:
-        await run_in_threadpool(_check_access)
-        result = await run_in_threadpool(_update)
-        return EventResponse(**result)
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to update event: {exc}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update event: {exc}",
         ) from exc
 
 
 async def delete_event(client: Client, event_id: str) -> dict[str, str]:
-    """Удалить событие (только для администраторов)"""
-    def _delete():
+    """Удалить событие (только для администраторов - soft delete)"""
+    try:
         # Помечаем событие как удаленное вместо физического удаления
-        response = (
+        response = await db_execute(
             client.table("events")
             .update({"is_deleted": True})
             .eq("id", event_id)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Event not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event not found",
+            )
         
         return {"message": "Event marked as deleted successfully"}
 
-    try:
-        return await run_in_threadpool(_delete)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to delete event: {exc}")
         raise HTTPException(

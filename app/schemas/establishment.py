@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import re
-from pydantic import BaseModel, field_validator
 from typing import Optional, Any
+
+from pydantic import BaseModel, field_validator, ConfigDict
+
+from app.utils.validators import validate_phone_number
 
 
 class WorkingHours(BaseModel):
@@ -25,7 +27,7 @@ class WeeklySchedule(BaseModel):
 
 class SocialNetworks(BaseModel):
     """Социальные сети заведения - поддерживает произвольные ключи"""
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="allow")
     
     instagram: Optional[str] = None
     facebook: Optional[str] = None
@@ -47,20 +49,14 @@ class EstablishmentCreate(BaseModel):
     @classmethod
     def validate_phone(cls, v: str) -> str:
         """Валидация телефона по маске +7###-###-##-##"""
-        # Удаляем все пробелы и дефисы для проверки
-        cleaned = re.sub(r"[\s-]", "", v)
-        # Проверяем формат +7XXXXXXXXXX (11 цифр после +7)
-        pattern = r"^\+7\d{10}$"
-        if not re.match(pattern, cleaned):
-            raise ValueError(
-                "Телефон должен быть в формате +7###-###-##-## (например: +7999-123-45-67)"
-            )
-        # Возвращаем в формате с дефисами
-        if "-" not in v:
-            # Форматируем: +7XXX-XXX-XX-XX
-            formatted = f"+7{cleaned[2:5]}-{cleaned[5:8]}-{cleaned[8:10]}-{cleaned[10:12]}"
-            return formatted
-        return v
+        result = validate_phone_number(v)
+        if result is None:
+            # This should technically not happen if the field is required str, 
+            # but Pydantic validation flow might be complex.
+            # If v was somehow None, Pydantic would likely catch it before validation if it's not Optional.
+            # But let's be safe.
+            raise ValueError("Phone number is required")
+        return result
 
 
 class EstablishmentUpdate(BaseModel):
@@ -74,28 +70,15 @@ class EstablishmentUpdate(BaseModel):
 
     @field_validator("phone")
     @classmethod
-    def validate_phone(cls, v: str) -> str:
+    def validate_phone(cls, v: str | None) -> str | None:
         """Валидация телефона по маске +7###-###-##-##"""
-        if v is None:
-            return v
-        # Удаляем все пробелы и дефисы для проверки
-        cleaned = re.sub(r"[\s-]", "", v)
-        # Проверяем формат +7XXXXXXXXXX (11 цифр после +7)
-        pattern = r"^\+7\d{10}$"
-        if not re.match(pattern, cleaned):
-            raise ValueError(
-                "Телефон должен быть в формате +7###-###-##-## (например: +7999-123-45-67)"
-            )
-        # Возвращаем в формате с дефисами
-        if "-" not in v:
-            # Форматируем: +7XXX-XXX-XX-XX
-            formatted = f"+7{cleaned[2:5]}-{cleaned[5:8]}-{cleaned[8:10]}-{cleaned[10:12]}"
-            return formatted
-        return v
+        return validate_phone_number(v)
 
 
 class EstablishmentResponse(BaseModel):
     """Схема для ответа с информацией о заведении"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     name: str
     phone: str
@@ -106,7 +89,3 @@ class EstablishmentResponse(BaseModel):
     owner_id: str
     created_at: str
     updated_at: str
-
-    class Config:
-        from_attributes = True
-
