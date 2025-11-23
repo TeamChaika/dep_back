@@ -57,6 +57,11 @@ async def upload_event_poster(
             
             return UploadResponse(url=public_url, path=file_path)
         except Exception as exc:
+            error_msg = str(exc)
+            if "NoSuchBucket" in error_msg:
+                logger.error(f"Storage bucket 'event-posters' not found: {exc}")
+                raise ValueError("Storage bucket 'event-posters' not found. Please run migration 'migrations/create_storage_bucket.sql' in Supabase SQL Editor.") from exc
+                
             logger.error(f"Failed to upload file to Supabase Storage: {exc}")
             raise ValueError(f"Failed to upload file: {exc}") from exc
     
