@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from supabase import Client
 
 from app.deps.supabase import get_supabase_client
-from app.deps.auth import get_current_user_id, get_current_admin
+from app.deps.auth import get_current_user_id, get_current_admin, get_authenticated_client
 from app.schemas.deposit import (
     DepositCreate,
     DepositUpdate,
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/deposits", tags=["deposits"])
 @router.post("", response_model=DepositResponse, status_code=201)
 async def create(
     payload: DepositCreate,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> DepositResponse:
     """Создать новый депозит"""
@@ -39,7 +39,7 @@ async def list_all(
     event_id: str | None = Query(None, description="Фильтр по событию"),
     skip: int = Query(0, ge=0, description="Количество записей для пропуска"),
     limit: int = Query(100, ge=1, le=1000, description="Максимальное количество записей"),
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> list[DepositResponse]:
     """Получить список депозитов пользователя"""
@@ -65,7 +65,7 @@ async def get_by_link(
 @router.get("/{deposit_id}", response_model=DepositResponse)
 async def get_by_id(
     deposit_id: str,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> DepositResponse:
     """Получить депозит по ID (только свои депозиты)"""
@@ -76,7 +76,7 @@ async def get_by_id(
 async def update(
     deposit_id: str,
     payload: DepositUpdate,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> DepositResponse:
     """Обновить депозит (только свои депозиты)"""
@@ -88,7 +88,7 @@ async def update(
 @router.delete("/{deposit_id}")
 async def delete(
     deposit_id: str,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     admin_id: str = Depends(get_current_admin),
 ) -> dict[str, str]:
     """Удалить депозит (только для администраторов)"""

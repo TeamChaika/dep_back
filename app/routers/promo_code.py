@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from supabase import Client
 
 from app.deps.supabase import get_supabase_client
-from app.deps.auth import get_current_user_id, get_current_admin
+from app.deps.auth import get_current_user_id, get_current_admin, get_authenticated_client
 from app.schemas.promo_code import (
     PromoCodeCreate,
     PromoCodeUpdate,
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/promo-codes", tags=["promo-codes"])
 @router.post("", response_model=PromoCodeResponse, status_code=201)
 async def create(
     payload: PromoCodeCreate,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> PromoCodeResponse:
     """Создать новый промокод"""
@@ -39,7 +39,7 @@ async def list_all(
     event_id: str | None = Query(None, description="Фильтр по событию"),
     skip: int = Query(0, ge=0, description="Количество записей для пропуска"),
     limit: int = Query(100, ge=1, le=1000, description="Максимальное количество записей"),
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> list[PromoCodeResponse]:
     """Получить список промокодов пользователя"""
@@ -60,7 +60,7 @@ async def validate(
 @router.get("/{promo_code_id}", response_model=PromoCodeResponse)
 async def get_by_id(
     promo_code_id: str,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> PromoCodeResponse:
     """Получить промокод по ID (только свои промокоды)"""
@@ -71,7 +71,7 @@ async def get_by_id(
 async def update(
     promo_code_id: str,
     payload: PromoCodeUpdate,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> PromoCodeResponse:
     """Обновить промокод (только свои промокоды)"""
@@ -83,7 +83,7 @@ async def update(
 @router.delete("/{promo_code_id}")
 async def delete(
     promo_code_id: str,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     admin_id: str = Depends(get_current_admin),
 ) -> dict[str, str]:
     """Удалить промокод (только для администраторов)"""

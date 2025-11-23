@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from supabase import Client
 
 from app.deps.supabase import get_supabase_client
-from app.deps.auth import get_current_user_id, get_current_admin
+from app.deps.auth import get_current_user_id, get_current_admin, get_authenticated_client
 from app.schemas.ticket import (
     TicketCreate,
     TicketUpdate,
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/tickets", tags=["tickets"])
 @router.post("", response_model=TicketResponse, status_code=201)
 async def create(
     payload: TicketCreate,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> TicketResponse:
     """Создать новый билет"""
@@ -40,7 +40,7 @@ async def list_all(
     event_id: str | None = Query(None, description="Фильтр по событию"),
     skip: int = Query(0, ge=0, description="Количество записей для пропуска"),
     limit: int = Query(100, ge=1, le=1000, description="Максимальное количество записей"),
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> list[TicketResponse]:
     """Получить список билетов пользователя"""
@@ -71,7 +71,7 @@ async def check_in(
 @router.get("/{ticket_id}", response_model=TicketResponse)
 async def get_by_id(
     ticket_id: str,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> TicketResponse:
     """Получить билет по ID (только свои билеты)"""
@@ -82,7 +82,7 @@ async def get_by_id(
 async def update(
     ticket_id: str,
     payload: TicketUpdate,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     user_id: str = Depends(get_current_user_id),
 ) -> TicketResponse:
     """Обновить билет (только свои билеты)"""
@@ -94,7 +94,7 @@ async def update(
 @router.delete("/{ticket_id}")
 async def delete(
     ticket_id: str,
-    client: Client = Depends(get_supabase_client),
+    client: Client = Depends(get_authenticated_client),
     admin_id: str = Depends(get_current_admin),
 ) -> dict[str, str]:
     """Удалить билет (только для администраторов)"""
