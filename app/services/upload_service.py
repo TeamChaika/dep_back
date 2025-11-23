@@ -4,9 +4,9 @@ import logging
 import uuid
 from datetime import datetime
 from fastapi import HTTPException, status, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from supabase import Client
 
+from app.core.database import db_execute
 from app.schemas.upload import UploadResponse
 from app.core.config import get_settings
 
@@ -44,7 +44,8 @@ async def upload_event_poster(
         
         try:
             # Загружаем файл в Supabase Storage (bucket: event-posters)
-            storage_response = client.storage.from_("event-posters").upload(
+            # Метод upload является синхронным
+            client.storage.from_("event-posters").upload(
                 file_path,
                 file_content,
                 file_options={"content-type": file.content_type, "upsert": False}
@@ -60,7 +61,8 @@ async def upload_event_poster(
             raise ValueError(f"Failed to upload file: {exc}") from exc
     
     try:
-        return await run_in_threadpool(_upload)
+        # Используем db_execute для запуска синхронного вызова в threadpool
+        return await db_execute(_upload)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -72,4 +74,3 @@ async def upload_event_poster(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload file: {exc}",
         ) from exc
-
