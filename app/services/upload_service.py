@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import io
 import logging
 import uuid
 from datetime import datetime
+
+import boto3
+from botocore.exceptions import ClientError
 from fastapi import HTTPException, status, UploadFile
 from supabase import Client
 
@@ -16,7 +20,7 @@ logger = logging.getLogger(__name__)
 async def upload_event_poster(
     client: Client, file: UploadFile, user_id: str
 ) -> UploadResponse:
-    """Загрузить афишу события в Supabase Storage"""
+    """Загрузить афишу события в S3 хранилище"""
     
     # Проверяем тип файла
     allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"]
@@ -35,42 +39,65 @@ async def upload_event_poster(
             detail="File size exceeds maximum allowed size (10MB)",
         )
     
-    def _upload():
+    def _upload_s3():
+        settings = get_settings()
+        
+        if not settings.s3_endpoint_url or not settings.s3_access_key or not settings.s3_secret_key:
+            raise ValueError("S3 configuration is missing (endpoint, access_key, or secret_key)")
+
         # Генерируем уникальное имя файла
         file_extension = file.filename.split(".")[-1] if "." in file.filename else "jpg"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_filename = f"{user_id}_{timestamp}_{uuid.uuid4().hex[:8]}.{file_extension}"
-        file_path = unique_filename  # Путь относительно bucket
+        
+        # Инициализируем S3 клиент
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=settings.s3_endpoint_url,
+            aws_access_key_id=settings.s3_access_key,
+            aws_secret_access_key=settings.s3_secret_key,
+            region_name=settings.s3_region_name,
+        )
         
         try:
-            # Загружаем файл в Supabase Storage (bucket: event-posters)
-            # Метод upload является синхронным
-            client.storage.from_("event-posters").upload(
-                file_path,
-                file_content,
-                file_options={"content-type": file.content_type, "upsert": False}
+            # Загружаем файл
+            file_obj = io.BytesIO(file_content)
+            s3_client.upload_fileobj(
+                file_obj,
+                settings.s3_bucket_name,
+                unique_filename,
+                ExtraArgs={
+                    "ContentType": file.content_type,
+                    "ACL": "public-read",  # Делаем файл публичным
+                },
             )
             
-            # Получаем публичный URL
-            settings = get_settings()
-            public_url = f"{settings.supabase_url}/storage/v1/object/public/event-posters/{file_path}"
+            # Формируем публичный URL
+            # Обычно это endpoint_url/bucket_name/filename
+            # Если endpoint без пути, добавляем bucket name
+            base_url = settings.s3_endpoint_url.rstrip("/")
+            public_url = f"{base_url}/{settings.s3_bucket_name}/{unique_filename}"
             
-            return UploadResponse(url=public_url, path=file_path)
-        except Exception as exc:
-            error_msg = str(exc)
-            if "NoSuchBucket" in error_msg:
-                logger.error(f"Storage bucket 'event-posters' not found: {exc}")
-                raise ValueError("Storage bucket 'event-posters' not found. Please run migration 'migrations/create_storage_bucket.sql' in Supabase SQL Editor.") from exc
-                
-            logger.error(f"Failed to upload file to Supabase Storage: {exc}")
-            raise ValueError(f"Failed to upload file: {exc}") from exc
+            return UploadResponse(url=public_url, path=unique_filename)
+            
+        except ClientError as e:
+            logger.error(f"Failed to upload file to S3: {e}")
+            raise ValueError(f"Failed to upload file to S3: {e}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error during S3 upload: {e}")
+            raise ValueError(f"Unexpected error: {e}") from e
     
     try:
-        # Используем db_execute для запуска синхронного вызова в threadpool
-        return await db_execute(_upload)
+        # Используем db_execute для запуска синхронного вызова boto3 в threadpool
+        return await db_execute(_upload_s3)
     except ValueError as exc:
+        # Пробрасываем понятные ошибки конфигурации или загрузки
+        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        if "S3 configuration is missing" in str(exc):
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status_code,
             detail=str(exc),
         ) from exc
     except Exception as exc:
