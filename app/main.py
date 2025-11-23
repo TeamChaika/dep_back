@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
-from app.routers import auth, establishment, event, upload, deposit, ticket, promo_code
+from app.routers import auth, establishment, event, upload, deposit, ticket, promo_code, debug
 
 
 def create_app() -> FastAPI:
@@ -24,6 +24,10 @@ def create_app() -> FastAPI:
     application.include_router(deposit.router, prefix=settings.api_prefix)
     application.include_router(ticket.router, prefix=settings.api_prefix)
     application.include_router(promo_code.router, prefix=settings.api_prefix)
+    
+    # Временно подключаем дебаг роутер
+    application.include_router(debug.router, prefix=settings.api_prefix)
+    
     return application
 
 
@@ -33,4 +37,3 @@ app = create_app()
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
-
