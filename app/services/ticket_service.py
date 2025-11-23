@@ -4,9 +4,9 @@ import logging
 import uuid
 from datetime import datetime
 from fastapi import HTTPException, status
-from fastapi.concurrency import run_in_threadpool
 from supabase import Client
 
+from app.core.database import db_execute
 from app.schemas.ticket import (
     TicketCreate,
     TicketUpdate,
@@ -27,14 +27,13 @@ async def create_ticket(
     client: Client, payload: TicketCreate, user_id: str
 ) -> TicketResponse:
     """Создать новый билет"""
-    def _check_event():
+    try:
         # Получаем событие
-        event_response = (
+        event_response = await db_execute(
             client.table("events")
             .select("id, establishment_id, ticket_types")
             .eq("id", payload.event_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not event_response.data:
@@ -44,51 +43,42 @@ async def create_ticket(
         establishment_id = event.get("establishment_id")
         
         # Проверяем, что заведение принадлежит пользователю
-        establishment_response = (
+        establishment_response = await db_execute(
             client.table("establishments")
             .select("id, owner_id")
             .eq("id", establishment_id)
             .eq("owner_id", user_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not establishment_response.data:
             raise ValueError("Event not found or access denied")
         
-        return event
-
-    def _check_promo_code():
         # Если указан промокод, проверяем его
         if payload.promo_code_id:
-            response = (
+            promo_response = await db_execute(
                 client.table("promo_codes")
                 .select("id, current_uses, max_uses")
                 .eq("id", payload.promo_code_id)
                 .eq("is_deleted", False)
-                .execute()
             )
             
-            if not response.data:
+            if not promo_response.data:
                 raise ValueError("Promo code not found")
             
-            promo_code = response.data[0]
+            promo_code = promo_response.data[0]
             if promo_code.get("max_uses") is not None:
                 if promo_code.get("current_uses", 0) >= promo_code.get("max_uses"):
                     raise ValueError("Promo code limit exceeded")
         
-        return True
-
-    def _create():
         qr_code = generate_qr_code()
         
         # Проверяем уникальность QR кода
         while True:
-            check_response = (
+            check_response = await db_execute(
                 client.table("tickets")
                 .select("id")
                 .eq("qr_code", qr_code)
-                .execute()
             )
             if not check_response.data:
                 break
@@ -113,33 +103,29 @@ async def create_ticket(
             "is_deleted": False,
         }
         
-        response = client.table("tickets").insert(data).execute()
+        response = await db_execute(client.table("tickets").insert(data))
         
         if not response.data:
             raise ValueError("Failed to create ticket")
         
         # Увеличиваем счетчик использований промокода
         if payload.promo_code_id:
-            promo_response = (
+            promo_data_response = await db_execute(
                 client.table("promo_codes")
                 .select("current_uses")
                 .eq("id", payload.promo_code_id)
                 .single()
-                .execute()
             )
-            if promo_response.data:
-                current_uses = promo_response.data.get("current_uses", 0)
-                client.table("promo_codes").update({
-                    "current_uses": current_uses + 1
-                }).eq("id", payload.promo_code_id).execute()
+            if promo_data_response.data:
+                current_uses = promo_data_response.data.get("current_uses", 0)
+                await db_execute(
+                    client.table("promo_codes").update({
+                        "current_uses": current_uses + 1
+                    }).eq("id", payload.promo_code_id)
+                )
         
-        return response.data[0]
+        return TicketResponse(**response.data[0])
 
-    try:
-        await run_in_threadpool(_check_event)
-        await run_in_threadpool(_check_promo_code)
-        result = await run_in_threadpool(_create)
-        return TicketResponse(**result)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -157,48 +143,49 @@ async def get_ticket(
     client: Client, ticket_id: str, user_id: str
 ) -> TicketResponse:
     """Получить билет по ID"""
-    def _get():
+    try:
         # Получаем билет
-        response = (
+        response = await db_execute(
             client.table("tickets")
             .select("*")
             .eq("id", ticket_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Ticket not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found",
+            )
         
         ticket = response.data[0]
         event_id = ticket.get("event_id")
         
         # Проверяем доступ через событие
-        event_response = (
+        event_response = await db_execute(
             client.table("events")
             .select("id, establishments!inner(owner_id)")
             .eq("id", event_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not event_response.data:
-            raise ValueError("Event not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event not found",
+            )
         
         establishment = event_response.data[0].get("establishments")
         if not establishment or establishment.get("owner_id") != user_id:
-            raise ValueError("Ticket not found or access denied")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found or access denied",
+            )
         
-        return ticket
+        return TicketResponse(**ticket)
 
-    try:
-        result = await run_in_threadpool(_get)
-        return TicketResponse(**result)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to get ticket: {exc}")
         raise HTTPException(
@@ -211,28 +198,24 @@ async def get_ticket_by_qr(
     client: Client, qr_code: str
 ) -> TicketByQRResponse:
     """Получить билет по QR коду (публичный доступ)"""
-    def _get():
-        response = (
+    try:
+        response = await db_execute(
             client.table("tickets")
             .select("*")
             .eq("qr_code", qr_code)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Ticket not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found",
+            )
         
-        return response.data[0]
+        return TicketByQRResponse(**response.data[0])
 
-    try:
-        result = await run_in_threadpool(_get)
-        return TicketByQRResponse(**result)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to get ticket by QR: {exc}")
         raise HTTPException(
@@ -245,18 +228,20 @@ async def check_in_ticket(
     client: Client, qr_code: str, payload: TicketCheckIn
 ) -> TicketResponse:
     """Проверить билет (check-in)"""
-    def _check_in():
+    try:
         # Получаем билет
-        response = (
+        response = await db_execute(
             client.table("tickets")
             .select("*")
             .eq("qr_code", qr_code)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Ticket not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found",
+            )
         
         ticket = response.data[0]
         current_checked_in = ticket.get("guests_checked_in", 0)
@@ -276,26 +261,24 @@ async def check_in_ticket(
             "checked_in_at": datetime.now().isoformat(),
         }
         
-        update_response = (
+        update_response = await db_execute(
             client.table("tickets")
             .update(update_data)
             .eq("qr_code", qr_code)
-            .execute()
         )
         
         if not update_response.data:
             raise ValueError("Failed to check in ticket")
         
-        return update_response.data[0]
+        return TicketResponse(**update_response.data[0])
 
-    try:
-        result = await run_in_threadpool(_check_in)
-        return TicketResponse(**result)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to check in ticket: {exc}")
         raise HTTPException(
@@ -308,14 +291,13 @@ async def list_tickets(
     client: Client, event_id: str | None, user_id: str, skip: int = 0, limit: int = 100
 ) -> list[TicketResponse]:
     """Получить список билетов"""
-    def _list():
+    try:
         # Сначала получаем события пользователя
-        events_response = (
+        events_response = await db_execute(
             client.table("events")
             .select("id, establishments!inner(owner_id)")
             .eq("establishments.owner_id", user_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         user_event_ids = [event["id"] for event in events_response.data]
@@ -338,13 +320,11 @@ async def list_tickets(
                 return []
             query = query.eq("event_id", event_id)
         
-        response = query.range(skip, skip + limit - 1).execute()
+        response = await db_execute(query.range(skip, skip + limit - 1))
         
-        return response.data or []
-
-    try:
-        results = await run_in_threadpool(_list)
+        results = response.data or []
         return [TicketResponse(**item) for item in results]
+
     except Exception as exc:
         logger.error(f"Failed to list tickets: {exc}")
         raise HTTPException(
@@ -357,40 +337,44 @@ async def update_ticket(
     client: Client, ticket_id: str, payload: TicketUpdate, user_id: str
 ) -> TicketResponse:
     """Обновить билет"""
-    def _check_access():
+    try:
         # Получаем билет
-        ticket_response = (
+        ticket_response = await db_execute(
             client.table("tickets")
             .select("event_id")
             .eq("id", ticket_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not ticket_response.data:
-            raise ValueError("Ticket not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found",
+            )
         
         event_id = ticket_response.data[0].get("event_id")
         
         # Проверяем доступ через событие
-        event_response = (
+        event_response = await db_execute(
             client.table("events")
             .select("id, establishments!inner(owner_id)")
             .eq("id", event_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not event_response.data:
-            raise ValueError("Event not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event not found",
+            )
         
         establishment = event_response.data[0].get("establishments")
         if not establishment or establishment.get("owner_id") != user_id:
-            raise ValueError("Ticket not found or access denied")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found or access denied",
+            )
         
-        return True
-
-    def _update():
         data = {}
         
         if payload.first_name is not None:
@@ -413,12 +397,11 @@ async def update_ticket(
                 data["paid_at"] = None
         if payload.guests_checked_in is not None:
             # Получаем текущий билет для проверки лимита
-            current = (
+            current = await db_execute(
                 client.table("tickets")
                 .select("guest_count")
                 .eq("id", ticket_id)
                 .single()
-                .execute()
             )
             if current.data:
                 if payload.guests_checked_in > current.data.get("guest_count", 0):
@@ -430,58 +413,52 @@ async def update_ticket(
         if not data:
             raise ValueError("No fields to update")
         
-        response = (
+        response = await db_execute(
             client.table("tickets")
             .update(data)
             .eq("id", ticket_id)
             .eq("is_deleted", False)
-            .execute()
         )
         
         if not response.data:
             raise ValueError("Ticket not found, access denied, deleted, or update failed")
         
-        return response.data[0]
+        return TicketResponse(**response.data[0])
 
-    try:
-        await run_in_threadpool(_check_access)
-        result = await run_in_threadpool(_update)
-        return TicketResponse(**result)
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to update ticket: {exc}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update ticket: {exc}",
         ) from exc
 
 
 async def delete_ticket(client: Client, ticket_id: str) -> dict[str, str]:
-    """Удалить билет (только для администраторов)"""
-    def _delete():
-        response = (
+    """Удалить билет (только для администраторов - soft delete)"""
+    try:
+        response = await db_execute(
             client.table("tickets")
             .update({"is_deleted": True})
             .eq("id", ticket_id)
-            .execute()
         )
         
         if not response.data:
-            raise ValueError("Ticket not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found",
+            )
         
         return {"message": "Ticket marked as deleted successfully"}
 
-    try:
-        return await run_in_threadpool(_delete)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"Failed to delete ticket: {exc}")
         raise HTTPException(
