@@ -54,7 +54,6 @@ async def get_current_user_id(
 
 async def get_authenticated_client(
     authorization: Optional[str] = Header(None),
-    base_client: Client = Depends(get_supabase_client),
 ) -> Client:
     """Получить Supabase client с установленной сессией пользователя"""
     if not authorization:
