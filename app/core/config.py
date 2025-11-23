@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # Возвращаем дефолтные значения, чтобы приложение запускалось без .env
     # В продакшене эти значения должны быть переопределены через переменные окружения
     supabase_url: str = "https://s4.chaika.team"
-    supabase_anon_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzYzMTU0MDAwLCJleHAiOjE5MjA5MjA0MDB9.N9oeCHtulTdg9KT2PiV5oVjj2GQEVwf0XZF4Pd6urRI"
+    supabase_anon_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzYzNTg2MDAwLCJleHAiOjE5MjEzNTI0MDB9._OCmQ_QU6yItH90k4Ojw2K3eRRHOLtgEOCxIN3K5szQ"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

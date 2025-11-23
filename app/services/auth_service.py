@@ -26,12 +26,12 @@ logger = logging.getLogger(__name__)
 async def register_user(client: Client, payload: RegisterRequest) -> MessageResponse:
     try:
         # Supabase GoTrue calls are synchronous
-        # We can use db_execute if it supports callables, or just wrapper
         def _sign_up():
             return client.auth.sign_up({"email": payload.email, "password": payload.password})
         
         response = await db_execute(_sign_up)
     except Exception as exc:
+        logger.error(f"Registration failed: {exc}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Registration failed: {exc}",
@@ -75,6 +75,7 @@ async def login_user(client: Client, payload: LoginRequest) -> MessageResponse:
             )
         response = await db_execute(_sign_in)
     except Exception as exc:
+        logger.error(f"Login failed: {exc}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Login failed: {exc}",
