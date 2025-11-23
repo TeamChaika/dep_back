@@ -4,12 +4,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.core.logging import setup_logging, LoggingMiddleware
 from app.routers import auth, establishment, event, upload, deposit, ticket, promo_code
 
 
 def create_app() -> FastAPI:
+    # Настраиваем логирование при старте
+    setup_logging()
+    
     settings = get_settings()
     application = FastAPI(title=settings.app_name)
+    
+    # Добавляем Middleware для логирования запросов (первым, чтобы перехватывать всё)
+    application.add_middleware(LoggingMiddleware)
+    
     application.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
