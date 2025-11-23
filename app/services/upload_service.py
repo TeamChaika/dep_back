@@ -42,8 +42,8 @@ async def upload_event_poster(
     def _upload_s3():
         settings = get_settings()
         
-        if not settings.s3_endpoint_url or not settings.s3_access_key or not settings.s3_secret_key:
-            raise ValueError("S3 configuration is missing (endpoint, access_key, or secret_key)")
+        if not settings.s3_endpoint_url or not settings.s3_access_key or not settings.s3_secret_key or not settings.s3_bucket_name:
+            raise ValueError("S3 configuration is missing (endpoint, access_key, secret_key, or bucket_name)")
 
         # Генерируем уникальное имя файла
         file_extension = file.filename.split(".")[-1] if "." in file.filename else "jpg"

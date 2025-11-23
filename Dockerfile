@@ -25,7 +25,12 @@ FROM python:3.12-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    S3_ENDPOINT_URL="https://s3.chaika.team" \
+    S3_ACCESS_KEY="5DOKPHK6O1RHJ47OQNUI" \
+    S3_SECRET_KEY="MnJYMdO0tvA1UhLIyVHT3luthtNkptvCoyrKAgjC" \
+    S3_BUCKET_NAME="359ffbe7-3f866801-eeba-4f2b-b4a5-2fad15ff3500" \
+    S3_REGION_NAME="ru-1"
 
 WORKDIR /app
 
