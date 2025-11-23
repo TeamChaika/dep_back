@@ -6,3 +6,4 @@ requests
 PyJWT
 python-multipart
 pydantic-settings
+python-dotenv
